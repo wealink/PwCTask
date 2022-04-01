@@ -1,0 +1,23 @@
+repositories:
+  - name: wework
+    url: acr://wework-chart.cn-shanghai.cr.aliyuncs.com/wework/helm
+
+helmDefaults:
+  cleanupOnFail: false               #dedicated default key for helm flag --cleanup-on-fail
+  verify: false
+  wait: true
+  timeout: 30
+  recreatePods: false
+  # forces resource update through delete/recreate if needed (default false)
+  force: true
+  historyMax: 5
+  createNamespace: false
+
+releases:
+  - name: {{ requiredEnv "APP_NAME" }}
+    namespace: {{ requiredEnv "NAME_SPACE" }}
+    chart: wework/demo
+    version: 0.1.0
+    values:
+      - ./values-{{ requiredEnv "ENV" }}.yaml
+    atomic: false

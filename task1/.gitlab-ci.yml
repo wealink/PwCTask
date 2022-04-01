@@ -1,0 +1,116 @@
+image: zhaohongbo/jobs-image:202202231527
+
+stages:
+  - package
+  - build
+  - test
+  - deploy
+
+variables:
+  #KUBECONFIG: ~/.kube/config
+  MAVEN_OPTS: "-Dmaven.repo.local=/opt/cache/.m2/repository"
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+
+mvn_build_job:
+  image: zhaohongbo/jobs-image:202202231527
+  stage: package
+  #tags:
+  #  - k8s-runner
+  script:
+    - mvn package -B -DskipTests
+    - cp target/*.jar /opt/cache/$CI_PROJECT_NAME.jar
+    - ls -l /opt/cache/
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+docker_build_job:
+  image: docker:19.03.12
+  stage: build
+  services:
+    - docker:19.03.12-dind
+  #tags:
+  #  - k8s-runner
+  script:
+    - docker login --username $REGISTRY_USERNAME --password $REGISTRY_PASSWORD $REGISTRY_URL
+    - mkdir target
+    - cp /opt/cache/$CI_PROJECT_NAME.jar target/
+    - docker build -t $REGISTRY_URL/wework/$CI_PROJECT_NAME:$CI_COMMIT_SHORT_SHA .
+    - docker push $REGISTRY_URL/wework/$CI_PROJECT_NAME:$CI_COMMIT_SHORT_SHA
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+code_scan_job:
+  stage: test
+  image: zhaohongbo/jobs-image:202202231527
+  before_script:
+    - mvn package -B -DskipTests
+  script:
+    - |
+      mvn sonar:sonar \
+      -Dsonar.projectName=$CI_PROJECT_NAME \
+      -Dsonar.projectKey=$CI_PROJECT_NAME \
+      -Dsonar.projectVersion=$CI_COMMIT_SHORT_SHA \
+      -Dsonar.java.binaries=target/classes \
+      -Dsonar.sources=src/main/java \
+      -Dsonar.language=java \
+      -Dsonar.host.url=$SONAR_HOST \
+      -Dsonar.login=$SONAR_USERNAME \
+      -Dsonar.password=$SONAR_PASSWORD
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+junit_test_job:
+  stage: test
+  image: zhaohongbo/jobs-image:202202231527
+  script:
+    - mvn test
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+container_scan_job:
+  image: registry.gitlab.com/security-products/container-scanning:4
+  stage: test
+  variables:
+    GIT_STRATEGY: none
+    DOCKER_IMAGE: $REGISTRY_URL/wework/$CI_PROJECT_NAME:$CI_COMMIT_SHORT_SHA
+    DOCKER_USER: $REGISTRY_USERNAME
+    DOCKER_PASSWORD: $REGISTRY_PASSWORD
+  #allow_failure: true
+  artifacts:
+    reports:
+      container_scanning: gl-container-scanning-report.json
+      dependency_scanning: gl-dependency-scanning-report.json
+    paths: [gl-container-scanning-report.json, gl-dependency-scanning-report.json]
+  dependencies: []
+  script:
+    - gtcs scan
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+
+deploy_staging_job:
+  image: zhaohongbo/jobs-image:202202231527
+  stage: deploy
+  #tags:
+  #  - k8s-runner
+  script:
+    - echo $INFRA_CLUSTER |base64 -d > ~/.kube/config
+    - helm repo add wework acr://wework-chart.cn-shanghai.cr.aliyuncs.com/wework/helm --username $HELM_REPO_USERNAME --password $HELM_REPO_PASSWORD
+    - export APP_NAME=$CI_PROJECT_NAME-staging && export NAME_SPACE=devops && export ENV=staging && helmfile apply --set image.tag=$CI_COMMIT_SHORT_SHA
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+deploy_prod_job:
+  image: zhaohongbo/jobs-image:202202231527
+  stage: deploy
+  #tags:
+  #  - k8s-runner
+  script:
+    - echo $INFRA_CLUSTER |base64 -d > ~/.kube/config
+    - helm repo add wework acr://wework-chart.cn-shanghai.cr.aliyuncs.com/wework/helm --username $HELM_REPO_USERNAME --password $HELM_REPO_PASSWORD
+    - export APP_NAME=$CI_PROJECT_NAME-prod && export NAME_SPACE=devops && export ENV=staging && helmfile apply --set image.tag=$CI_COMMIT_SHORT_SHA
+  rules:
+    - if: '$CI_COMMIT_TAG'
